@@ -1,0 +1,57 @@
+- name: Create MyTool application shortcut and desktop icon
+  tags:
+    - mytool
+    - config
+  vars:
+    mytool_desktop_path: /usr/share/applications/MyTool.desktop
+    mytool_icon_path: /opt/mytool/share/images/mytool.svg
+    mytool_desktop_shortcut: /Desktop/MyTool.desktop
+    dconf_missing_for: []
+  block:
+    - name: Copy MyTool icon
+      ansible.builtin.copy:
+        src: ../../templates/mytool.svg
+        dest: "{{ MyTool_icon_path }}"
+        mode: 0644
+
+    - name: Copy MyTool desktop file
+      ansible.builtin.copy:
+        src: ../../templates/MyTool.desktop
+        dest: "{{ mytool_desktop_path }}"
+        mode: 0644
+
+    - name: Get list of existing users
+      shell: "cat /etc/passwd | grep 'home' | grep -v 'nologin$' | cut -d ':' -f 1"
+      register: passwd_output
+      
+    - name: Extract list of user names
+      set_fact:
+        home_users: "{{ passwd_output.stdout_lines }}"
+
+    - name: Copy MyTool desktop shortcut to user homedir
+      ansible.builtin.copy:
+        src: "{{ mytool_desktop_path }}"
+        dest: "/home/{{ item }}/{{ mytool_desktop_shortcut }}"
+        owner: "{{ item }}"
+        group: "{{ item }}"
+        mode: "744"
+      with_items: "{{ home_users }}"
+
+    - name: Set desktop shortcut as trusted
+      shell: sudo -u {{ item }} dbus-launch gio set /home/{{ item }}/Desktop/MyTool.desktop metadata::trusted true
+      loop: "{{ home_users }}"
+
+    - name: dconf check MyTool presence in dash for all users
+      shell: runuser -u {{ item }} dbus-launch gsettings get org.gnome.shell favorite-apps | tr "'" "\"" | jq 'any(.[]? == "MyTool.desktop"; .)'
+      register: dconf_check
+      with_items: "{{ home_users }}"
+
+    - name: Test users with missing entries
+      set_fact:
+        dconf_missing_for: "{{ dconf_missing_for + [item.item] }}"
+      when: item.stdout == "false"
+      with_items: "{{ dconf_check.results }}"
+
+    - name: Set MyTool icon to dashboard for all users
+      shell: runuser -u {{ item }} dbus-launch gsettings set org.gnome.shell favorite-apps $(dbus-launch gsettings get org.gnome.shell favorite-apps | tr "'" "\"" | jq -c '. |= . + ["MyTool.desktop"]' | tr "\"" "'")
+      with_items: "{{ dconf_missing_for }}"
